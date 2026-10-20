@@ -1,0 +1,13 @@
+fixture: 05-create-with-state-down.yaml
+
+expected:
+  status: ok
+  result: planned
+  operation: create
+  changes:
+    ipv4:
+      to: 172.23.167.1/32
+    description:
+      to: Student Test 1
+    admin_state:
+      to: down
