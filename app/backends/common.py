@@ -6,12 +6,18 @@ from ncclient.transport.errors import (
     SSHError,
 )
 
+from netmiko.exceptions import (
+    NetmikoAuthenticationException,
+    NetmikoTimeoutException,
+)
 
 def error(code):
     return {"status": "error", "result": code}
 
 def map_exception(exc):
-    if isinstance(exc, ( PermissionError, AuthenticationError)):
+    if isinstance(
+        exc,
+        ( PermissionError, AuthenticationError, NetmikoAuthenticationException)):
         return error("authentication_failed")
     if isinstance(
         exc,
@@ -23,6 +29,7 @@ def map_exception(exc):
             SSHError,
             SessionCloseError,
             TimeoutExpiredError,
+            NetmikoTimeoutException,
         ),
     ):
         return error("connection_failed")
