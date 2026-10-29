@@ -1,10 +1,6 @@
-import os
 from ipaddress import IPv4Interface
 from app.backends.common import error, map_exception
 from app.backends.planning import plan_interface as _plan_interface
-
-TIMEOUT = 10
-YANG_JSON = "application/yang-data+json"
 
 def _normalize(raw):
     iface = raw["ietf-interfaces:interface"]
