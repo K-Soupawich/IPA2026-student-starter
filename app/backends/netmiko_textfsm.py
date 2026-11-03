@@ -1,6 +1,11 @@
 import os
+import logging
+import re
 from netmiko import ConnectHandler
+from ntc_templates.parse import parse_output
 from app.backends.common import error, map_exception
+
+logger = logging.getLogger(__name__)
 
 def _connect(router):
     return ConnectHandler(
@@ -11,24 +16,47 @@ def _connect(router):
         timeout=10,
     )
 
+def _parse(command, raw):
+    try:
+        return parse_output(platform="cisco_ios", command=command, data=raw)
+    except Exception:
+        logger.warning("TextFSM failed for %r", command, exc_info=True)
+        return None
+
+def _parse_ip_interface_fallback(interface_name, raw):
+    first = raw.strip().splitlines()[0] if raw.strip() else ""
+    if not first.lower().startswith(interface_name.lower()):
+        return []
+
+    link = re.match(r"\S+ is (administratively down|up|down)", first)
+    ip = re.search(r"Internet address is (\d+\.\d+\.\d+\.\d+)/(\d+)", raw)
+    if not ip:
+        return []
+    return [{
+        "interface": interface_name,
+        "link_status": link.group(1) if link else "up",
+        "ip_address": [ip.group(1)],
+        "prefix_length": [ip.group(2)],
+    }]
+
 def _real_get(router, interface_name):
     with _connect(router) as conn:
-        ip_info = conn.send_command(
-            f"show ip interface {interface_name}", use_textfsm=True
-        )
-        descriptions = conn.send_command(
-            "show interfaces description", use_textfsm=True
-        )
-    # ถ้า TextFSM parse ไม่ได้ netmiko คืน str
-    if isinstance(ip_info, str):
-        if "Invalid input" in ip_info or "not found" in ip_info.lower():
-            ip_info = []
-        else:
-            raise RuntimeError("TextFSM parse failed")
-    if isinstance(descriptions, str):
-        raise RuntimeError("TextFSM parse failed")
-    return ip_info, descriptions
+        raw_ip = conn.send_command(f"show ip interface {interface_name}")
+        raw_desc = conn.send_command("show interfaces description")
 
+    if "Invalid input" in raw_ip or not raw_ip.strip():
+        return [], []
+
+    command = "show ip interface"
+    ip_info = _parse(command, raw_ip)
+    if not ip_info:
+        ip_info = _parse_ip_interface_fallback(interface_name, raw_ip)
+
+    descriptions = _parse("show interfaces description", raw_desc)
+    if descriptions is None:
+        raise RuntimeError("TextFSM parse failed for interface description")
+
+    return ip_info, descriptions
 
 def _real_delete(router, interface_name):
     ip_info, _ = _real_get(router, interface_name)
@@ -88,8 +116,10 @@ def get_interface_state(
             },
         }
     except (KeyError, TypeError, AttributeError, IndexError):
+        logger.exception("Netmiko status parse failed")
         return error("backend_failed")
     except Exception as exc:
+        logger.exception("Netmiko status failed")
         return map_exception(exc)
 
 
@@ -108,4 +138,5 @@ def delete_interface(
             return {"status": "ok", "result": "not_found", "interface": None}
         return error("backend_failed")
     except Exception as exc:
+        logger.exception("Netmiko delete failed")
         return map_exception(exc)
