@@ -1,6 +1,39 @@
+import os
+import requests
+import urllib3
 from ipaddress import IPv4Interface
 from app.backends.common import error, map_exception
 from app.backends.planning import plan_interface as _plan_interface
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+TIMEOUT = 10
+YANG_JSON = "application/yang-data+json"
+
+
+def _auth():
+    return (os.environ.get("ROUTER_USER", ""), os.environ.get("ROUTER_PASS", ""))
+
+
+def _real_get(url):
+    return requests.get(
+        url,
+        auth=_auth(),
+        headers={"Accept": YANG_JSON},
+        verify=False,
+        timeout=TIMEOUT,
+    )
+
+
+def _real_put(url, json):
+    return requests.put(
+        url,
+        auth=_auth(),
+        headers={"Content-Type": YANG_JSON, "Accept": YANG_JSON},
+        json=json,
+        verify=False,
+        timeout=TIMEOUT,
+    )
 
 def _normalize(raw):
     iface = raw["ietf-interfaces:interface"]
@@ -42,6 +75,9 @@ def get_interface_state(
     http_get=None,
 ):
     """Return normalized interface status using RESTCONF."""
+    http_get = http_get or _real_get
+    import logging
+    logger = logging.getLogger(__name__)
     url = (
         f"https://{router}/restconf/data/"
         f"ietf-interfaces:interfaces/interface={interface_name}"
@@ -50,12 +86,12 @@ def get_interface_state(
     try:
         response = http_get(url)
         code = response.status_code
-
         if code == 404:
             return {"status": "ok", "result": "not_found", "interface": None}
         if code in (401, 403):
             return error("authentication_failed")
         if code != 200:
+            logger.warning("RESTCONF GET %s -> HTTP %s", url, code)
             return error("backend_failed")
 
         return {
@@ -64,8 +100,10 @@ def get_interface_state(
             "interface": _normalize(response.json()),
         }
     except (KeyError, ValueError, TypeError, AttributeError):
+        logger.exception("RESTCONF parse failed")
         return error("backend_failed")
     except Exception as exc:
+        logger.exception("RESTCONF request failed")
         return map_exception(exc)
 
 
@@ -87,6 +125,7 @@ def apply_interface(
     http_put=None,
 ):
     """Apply complete desired interface state using RESTCONF."""
+    http_put = http_put or _real_put
     try:
         number = int(desired_interface["name"][len("Loopback"):])
         url = (

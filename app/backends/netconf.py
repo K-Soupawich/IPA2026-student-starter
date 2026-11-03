@@ -1,11 +1,38 @@
+import os
+from ncclient import manager
 from ipaddress import IPv4Interface
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 from ncclient import manager
 from app.backends.common import error, map_exception
 from app.backends.planning import plan_interface as _plan_interface
+import logging
 
 IF_NS = "urn:ietf:params:xml:ns:yang:ietf-interfaces"
+
+def _connect(router):
+    return manager.connect(
+        host=router,
+        port=830,
+        username=os.environ.get("ROUTER_USER", ""),
+        password=os.environ.get("ROUTER_PASS", ""),
+        hostkey_verify=False,
+        allow_agent=False,
+        look_for_keys=False,
+        timeout=10,
+    )
+
+
+def _real_get_config(router, filter_xml):
+    with _connect(router) as m:
+        return m.get_config(
+            source="running", filter=("subtree", filter_xml)
+        ).data_xml
+
+
+def _real_edit_config(router, config_xml):
+    with _connect(router) as m:
+        m.edit_config(target="running", config=config_xml)
 
 def _strip_ns(root):
     for el in root.iter():
@@ -25,6 +52,7 @@ def get_interface_state(
     netconf_get_config=None,
 ):
     """Return normalized interface status using NETCONF."""
+    netconf_get_config = netconf_get_config or _real_get_config
     try:
         xml_text = netconf_get_config(router, _filter_xml(interface_name))
         root = _strip_ns(ET.fromstring(xml_text))
@@ -95,10 +123,14 @@ def apply_interface(
     netconf_edit_config=None,
 ):
     """Apply complete desired interface state using NETCONF."""
+    netconf_edit_config = netconf_edit_config or _real_edit_config
+    logger = logging.getLogger(__name__)
     try:
         netconf_edit_config(router, _build_config(desired_interface))
         return {"status": "ok", "result": "applied"}
-    except (KeyError, ValueError, TypeError):
+    except (KeyError, ValueError, TypeError, AttributeError):
+        logger.exception("RESTCONF parse failed")
         return error("backend_failed")
     except Exception as exc:
+        logger.exception("RESTCONF request failed")
         return map_exception(exc)
